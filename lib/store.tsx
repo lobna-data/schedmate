@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { DataSet, Session, Teacher, Module, Group, Room, RoomType, Settings, rid } from './types';
 import { demoData, demoSessions } from './demo';
 import { generateSchedule } from './scheduler';
+import { autofix } from './autofix';
 
 const KEY = 'schedmate-data-v1';
 
@@ -24,10 +25,12 @@ interface Store {
   assignRoom: (sessionId: string, roomId: string) => string | null;
   deleteSession: (id: string) => void;
   generate: () => void;
-  importRows: (rows: { day: string; time: string; teacher: string; module: string; group: string; room: string }[]) => void;
+  importRows: (rows: { day: string; time: string; teacher: string; module: string; group: string; room: string }) => void;
   resetDemo: () => void;
   autoFix: boolean;
   lastFixes: string[];
+  setAutoFix: (on: boolean) => void;
+  fixNow: () => void;
 }
 
 const Ctx = createContext<Store | null>(null);

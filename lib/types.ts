@@ -1,5 +1,14 @@
 export type RoomType = 'classroom' | 'lab';
 
+// Algerian university week: Saturday -> Thursday (Friday is the weekend).
+// Typical Algerian lecture slots (lunch break 13:00-14:00 built in).
+export const ALL_DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+// Algerian university week: Saturday -> Thursday (Friday is the weekend).
+// Typical Algerian lecture slots (lunch break 13:00-14:00 built in).
+export const DEFAULT_SLOTS = ['08:00–09:30', '09:45–11:15', '11:30–13:00', '14:00–15:30', '15:45–17:15', '17:30–19:00'];
+
+// ... [other type definitions remain the same]
 export interface Teacher {
   id: string;
   name: string;
@@ -32,11 +41,6 @@ export interface Room {
   type: RoomType;
 }
 
-export interface Settings {
-  days: string[];
-  slots: string[];
-}
-
 export interface Session {
   id: string;
   day: string;
@@ -57,8 +61,8 @@ export interface DataSet {
 
 export type ConflictKind =
   | 'teacher_double'
-  | 'room_double'
   | 'group_double'
+  | 'room_double'
   | 'room_capacity'
   | 'room_type'
   | 'teacher_unavailable'
@@ -76,9 +80,3 @@ export const SLOT_HOURS = 1.5;
 export const slotKey = (day: string, slot: string) => `${day}|${slot}`;
 
 export const rid = (p: string) => p + '_' + Math.random().toString(36).slice(2, 9);
-
-export const ALL_DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-// Algerian university week: Saturday -> Thursday (Friday is the weekend).
-// Typical Algerian lecture slots (lunch break 13:00-14:00 built in).
-export const DEFAULT_SLOTS = ['08:00–09:30', '09:45–11:15', '11:30–13:00', '14:00–15:30', '15:45–17:15', '17:30–19:00'];

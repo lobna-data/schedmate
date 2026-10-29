@@ -26,8 +26,9 @@ export interface FixResult {
   fixes: string[];
   remaining: Conflict[];
 }
+export const isClean = (r: FixResult) => r.remaining.length === 0;
 
-/** Check whether a slot is OK for a given teacher/group/room/assignment */
+/** Class that holds the environment state for scoring candidates */
 class Env {
   data: DataSet;
   sessions: Session[];
@@ -57,36 +58,30 @@ class Env {
     roomId: string,
     excludeId?: string
   ): boolean {
-    // Teacher availability check (when restricted)
     const teacher = this.tMap.get(teacherId);
     if (teacher && teacher.restricted) {
       const key = `${day}|${slot}`;
       if (!teacher.availability.includes(key)) return false;
     }
 
-    // Teacher weekly hour cap
     const teacherSessions = this.sessions.filter(
       (s) => s.teacherId === teacherId && s.id !== excludeId
     );
-    const hoursThisWeek = teacherSessions.reduce((sum, s) => sum + SLOT_HOURS, 0);
-    if (teacher.maxHours > 0 && hoursThisWeek + SLOT_HOURS > teacher.maxHours) return false;
+    const hoursThisWeek = teacherSessions.reduce((sum, s) => sum + 1.5, 0);
+    if (teacher.maxHours > 0 && hoursThisWeek + 1.5 > teacher.maxHours) return false;
 
-    // Room capacity check
     const room = this.rMap.get(roomId);
     if (room && room.capacity < groupSize(groupId)) return false;
 
-    // Room type check (lab vs classroom)
     const module = this.mMap.get(moduleId);
     if (module && module.roomType === 'lab' && room?.type !== 'lab') return false;
     if (module && module.roomType === 'classroom' && room?.type === 'lab') return false;
 
-    // Group double-booking check
     const groupOccupied = this.sessions.filter(
       (s) => s.groupId === groupId && s.day === day && s.slot === slot && s.id !== excludeId
     ).length > 0;
     if (groupOccupied) return false;
 
-    // Teacher double-booking check
     const teacherOccupied = this.sessions.filter(
       (s) => s.teacherId === teacherId && s.day === day && s.slot === slot && s.id !== excludeId
     ).length > 0;
@@ -105,22 +100,19 @@ class Env {
 
     let score = 0;
 
-    // Preferred slots bonus
     if (module.prefSlots && module.prefSlots.length > 0) {
       const key = `${day}|${slot}`;
-      if (module.prefSlots.includes(key)) score += SCORE_WEIGHTS.preferred;
+      if (module.prefSlots.includes(key)) score += 2;
     }
 
-    // Day & group penalties (penalize early days/first slots slightly)
     const dayIdx = this.data.settings.days.indexOf(day);
     const slotIdx = this.data.settings.slots.indexOf(slot);
-    if (dayIdx >= 0) score -= SCORE_WEIGHTS.dayPenalty * dayIdx;
-    if (slotIdx >= 0) score -= 1; // small penalty for later slots
+    if (dayIdx >= 0) score -= 6 * dayIdx;
+    if (slotIdx >= 0) score -= 1;
 
-    // Capacity bonus: bigger cushion = better
     if (room && group) {
       const cushion = room.capacity - group.size;
-      score += Math.max(0, Math.floor(cushion / 10)) * SCORE_WEIGHTS.capacityBonus;
+      score += Math.max(0, Math.floor(cushion / 10)) * 10;
     }
 
     return score;
@@ -171,19 +163,20 @@ function _move(
   const idx = sessions.findIndex((s) => s.id === sessionId);
   if (idx === -1) return sessions;
 
-  const old = { ...sessions[idx] };
+  const oldDay = sessions[idx].day;
+  const oldSlot = sessions[idx].slot;
+  const oldRoomId = sessions[idx].roomId;
   sessions[idx] = { ...sessions[idx], day: newDay, slot: newSlot, roomId: newRoomId };
 
-  // Record the move
   const module = data.modules.find((m) => m.id === sessions[idx].moduleId);
   const teacher = data.teachers.find((t) => t.id === sessions[idx].teacherId);
   const group = data.groups.find((g) => g.id === sessions[idx].groupId);
-  const roomName = newRoomId ? data.rooms.find((r) => r.id === newRoomId)?.name ?? '' : '';
+  const roomName = data.rooms.find((r) => r.id === newRoomId)?.name ?? '';
   const teacherName = teacher?.name ?? '';
   const groupName = group?.name ?? '';
 
   fixes.push(
-    `Moved ${groupName ?? ''}${teacherName ?? ''}'s class "${module?.name ?? ''}" from ${old.day} ${old.slot} to ${newDay} ${newSlot} (${REASON[sessionId.includes('missing') ? 'missing_hours' : 'unknown']})`
+    `Moved ${groupName ?? ''}${teacherName ?? ''}'s class "${module?.name ?? ''}" from ${oldDay} ${oldSlot} to ${newDay} ${newSlot} (${REASON[sessionId.includes('missing') ? 'missing_hours' : 'unknown']})`
   );
 
   return sessions;
@@ -223,7 +216,6 @@ function _fillMissing(
   data: DataSet,
   fixes: string[]
 ): { sessions: Session[]; placed: boolean } {
-  // Collect modules still needing hours
   const jobs: { moduleId: string; groupId: string }[] = [];
   for (const m of data.modules) {
     if (!m.teacherId || !m.groupIds.length) continue;
@@ -233,7 +225,6 @@ function _fillMissing(
     }
   }
 
-  // Already-placed sessions per module+group
   const placed = new Map<string, Session[]>();
   for (const s of sessions) {
     const key = `${s.moduleId}|${s.groupId}`;
@@ -241,7 +232,6 @@ function _fillMissing(
     placed.get(key)!.push(s);
   }
 
-  // Try to place each remaining job
   const remaining: { moduleId: string; groupId: string }[] = [];
   for (const job of jobs) {
     const existing = placed.get(`${job.moduleId}|${job.groupId}`) || [];
@@ -275,10 +265,8 @@ export function autofix(
   for (let pass = 0; pass < maxPasses && remaining.length > 0; pass++) {
     const fixesThisPass: string[] = [];
 
-    // Repair each conflict
     for (const conflict of remaining) {
       const { sessionIds } = conflict;
-      // Pick the first session to move; others stay (or we reassign rooms)
       const sessionId = sessionIds[0];
       const session = currentSessions.find((s) => s.id === sessionId);
       if (!session) continue;
@@ -287,15 +275,10 @@ export function autofix(
       const teacher = data.teachers.find((t) => t.id === session.teacherId);
       const group = data.groups.find((g) => g.id === session.groupId);
 
-      // Strategy depends on conflict kind
       switch (conflict.kind) {
         case 'teacher_double': {
-          // Move this session to a new slot for the same teacher
           const cand = new Env(data, currentSessions, fixesThisPass).bestCandidate(
-            module?.id ?? '',
-            group?.id ?? '',
-            teacher?.id ?? '',
-            sessionId
+            module?.id ?? '', group?.id ?? '', teacher?.id ?? '', sessionId
           );
           if (cand) {
             currentSessions = _move(currentSessions, sessionId, cand.day, cand.slot, cand.roomId, data, fixesThisPass);
@@ -303,12 +286,8 @@ export function autofix(
           break;
         }
         case 'group_double': {
-          // Move this session to a different group's slot (or reassign room)
           const cand = new Env(data, currentSessions, fixesThisPass).bestCandidate(
-            module?.id ?? '',
-            group?.id ?? '',
-            teacher?.id ?? '',
-            sessionId
+            module?.id ?? '', group?.id ?? '', teacher?.id ?? '', sessionId
           );
           if (cand) {
             currentSessions = _move(currentSessions, sessionId, cand.day, cand.slot, cand.roomId, data, fixesThisPass);
@@ -316,12 +295,8 @@ export function autofix(
           break;
         }
         case 'room_double': {
-          // Reassign to a different room of same type, same capacity+
           const cand = new Env(data, currentSessions, fixesThisPass).bestCandidate(
-            module?.id ?? '',
-            group?.id ?? '',
-            teacher?.id ?? '',
-            sessionId
+            module?.id ?? '', group?.id ?? '', teacher?.id ?? '', sessionId
           );
           if (cand) {
             currentSessions = _reassignRoom(currentSessions, sessionId, cand.roomId, data, fixesThisPass);
@@ -329,9 +304,8 @@ export function autofix(
           break;
         }
         case 'room_capacity': {
-          // Move to a larger room
           const largerRooms = Array.from(data.rooms.entries())
-            .filter(([, r]) => r.capacity > (data.rooms.find((r2) => r2.id === session.roomId)?.capacity ?? 0))
+            .filter(([, r]) => r.capacity > (data.rooms.find((r2) => r2.id === currentSessions[0]?.roomId)?.capacity ?? 0))
             .map(([, r]) => r.id);
           if (largerRooms.length > 0) {
             currentSessions = _reassignRoom(currentSessions, sessionId, largerRooms[0], data, fixesThisPass);
@@ -339,7 +313,6 @@ export function autofix(
           break;
         }
         case 'room_type': {
-          // Move to a room of the correct type
           const correctType = module?.roomType ?? 'classroom';
           const correctRooms = Array.from(data.rooms.entries())
             .filter(([, r]) => r.type === correctType && r.id !== session.roomId)
@@ -350,12 +323,8 @@ export function autofix(
           break;
         }
         case 'teacher_unavailable': {
-          // Move to a slot the teacher IS available for
           const cand = new Env(data, currentSessions, fixesThisPass).bestCandidate(
-            module?.id ?? '',
-            group?.id ?? '',
-            teacher?.id ?? '',
-            sessionId
+            module?.id ?? '', group?.id ?? '', teacher?.id ?? '', sessionId
           );
           if (cand) {
             currentSessions = _move(currentSessions, sessionId, cand.day, cand.slot, cand.roomId, data, fixesThisPass);
@@ -363,30 +332,25 @@ export function autofix(
           break;
         }
         case 'missing_hours': {
-          // Fill missing hours via _fillMissing
           const fillResult = _fillMissing(currentSessions, data, fixesThisPass);
           currentSessions = fillResult.sessions;
-          if (!fillResult.placed) break; // can't place more
+          if (!fillResult.placed) break;
           break;
         }
-        default:
-          // If we can't determine a fix, just reassign room
+        default: {
           const cand = new Env(data, currentSessions, fixesThisPass).bestCandidate(
-            module?.id ?? '',
-            group?.id ?? '',
-            teacher?.id ?? '',
-            sessionId
+            module?.id ?? '', group?.id ?? '', teacher?.id ?? '', sessionId
           );
           if (cand) {
             currentSessions = _reassignRoom(currentSessions, sessionId, cand.roomId, data, fixesThisPass);
           }
           break;
+        }
       }
     }
 
     allFixes.push(...fixesThisPass);
 
-    // Re-detect conflicts
     remaining = detectConflicts(data, currentSessions);
   }
 
